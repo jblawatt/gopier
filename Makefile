@@ -6,7 +6,7 @@ echo:
 	echo "GOPATH $(GOPATH)"
 
 run: clean
-	go run main.go create --src test-template/src --dest test-template/dest -v values.yaml
+	go run main.go create --src test-template/src --dest test-template/dest -v test-template/values.yaml
 
 clean:
 	rm -rf test-template/dest
