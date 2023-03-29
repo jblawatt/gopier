@@ -9,10 +9,14 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	yaml "gopkg.in/yaml.v3"
 )
+
+const GopierHooksDir = ".gopier"
 
 func verifySrc(src string) error {
 	srcInfo, srcInfoErr := os.Stat(src)
@@ -41,6 +45,31 @@ func verifyDest(dest string) error {
 	return nil
 }
 
+func applyHooks(src string, dest string, ctx TemplateContext) error {
+	srcHooksDir := filepath.Join(src, GopierHooksDir)
+	if _, err := os.Stat(srcHooksDir); os.IsNotExist(err) {
+		return nil
+	}
+	items, _ := os.ReadDir(srcHooksDir)
+	for _, item := range items {
+		if item.IsDir() {
+			continue
+		}
+		hookFile := filepath.Join(srcHooksDir, item.Name())
+		// FIXME: only run if executable
+		cmd := exec.Command(hookFile, dest)
+		if output, err := cmd.Output(); err != nil {
+			return err
+		} else {
+			lines := strings.Split(string(output), "\n")
+			for _, line := range lines {
+				log.Printf("%s: %s\n", item.Name(), line)
+			}
+		}
+	}
+	return nil
+}
+
 func CopyNew(src string, dest string, ctx TemplateContext) error {
 	if err := verifySrc(src); err != nil {
 		return err
@@ -48,7 +77,11 @@ func CopyNew(src string, dest string, ctx TemplateContext) error {
 	if err := verifyDest(dest); err != nil {
 		return err
 	}
-	return handleFolder(src, dest, ctx)
+	if err := handleFolder(src, dest, ctx); err != nil {
+		return err
+	}
+	applyHooks(src, dest, ctx)
+	return nil
 }
 
 const TemplateExt = ".tpl"
@@ -69,7 +102,12 @@ func interpolate(strOrTemplate string, ctx TemplateContext) string {
 func handleFolder(src string, dest string, ctx TemplateContext) error {
 	items, _ := os.ReadDir(src)
 	for _, item := range items {
+
 		if item.IsDir() {
+			// TODO: handleDir
+			if item.Name() == GopierHooksDir {
+				continue
+			}
 			itemName := interpolate(item.Name(), ctx)
 			destName := interpolate(dest, ctx)
 			os.Mkdir(filepath.Join(destName, itemName), fs.ModePerm)
@@ -81,7 +119,9 @@ func handleFolder(src string, dest string, ctx TemplateContext) error {
 			if err != nil {
 				return err
 			}
+
 		} else {
+			// TODO: handleFile
 			itemName := interpolate(item.Name(), ctx)
 			dest = interpolate(dest, ctx)
 			destName := filepath.Join(dest, itemName)
