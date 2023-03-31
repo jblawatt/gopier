@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"log"
+	"fmt"
 
 	"github.com/jblawatt/gopier/core"
 	"github.com/spf13/cobra"
@@ -14,14 +14,13 @@ var createCmd = &cobra.Command{
 		src, _ := cmd.Flags().GetString("src")
 		dest, _ := cmd.Flags().GetString("dest")
 		values, _ := cmd.Flags().GetString("values")
-		ctx, ctxErr := core.CreateContext(values)
-		if ctxErr != nil {
-			return ctxErr
+		fmt.Println(src, dest, values)
+		ctx := core.CreateDefaultContext(src, dest, values)
+		runner := core.CreateDefaultRunner()
+		if err := runner.Run(ctx); err != nil {
+			return fmt.Errorf("Error running template %w", err)
 		}
-		log.Println(ctx)
-		if err := core.CopyNew(src, dest, ctx); err != nil {
-			return err
-		}
+
 		return nil
 	},
 }
