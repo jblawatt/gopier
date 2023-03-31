@@ -14,7 +14,6 @@ var createCmd = &cobra.Command{
 		src, _ := cmd.Flags().GetString("src")
 		dest, _ := cmd.Flags().GetString("dest")
 		values, _ := cmd.Flags().GetString("values")
-		fmt.Println(src, dest, values)
 		ctx := core.CreateDefaultContext(src, dest, values)
 		runner := core.CreateDefaultRunner()
 		if err := runner.Run(ctx); err != nil {
