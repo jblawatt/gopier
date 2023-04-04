@@ -5,9 +5,14 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+
+	yaml "gopkg.in/yaml.v3"
 )
 
 type Runner interface {
@@ -27,14 +32,20 @@ func (p *DefaultRunner) Run(context Context) error {
 
 	context.Src().Bootstrap()
 
+	// Create Items
 	items, _ := handleItem(
 		context.Src().TemplateAbsPath(),
 		context.Dest().AbsPath(),
 		context,
 	)
 
+	// Write Items to files
 	if !context.Options().DryRun {
 		writeItems(items)
+	}
+
+	// Apply Hooks
+	if !context.Options().DryRun {
 		applyHooks(context)
 	}
 
@@ -55,10 +66,15 @@ func writeItems(items []RenderItem) error {
 	return nil
 }
 
-func validateName(itemName string) error {
+func validateName(context Context, itemName string) error {
 	if itemName == "" {
 		return fmt.Errorf("Item name sould not be empty.")
 	}
+	return nil
+}
+
+func validateDestPath(context Context, destPath string) error {
+	// TODO: do not excape from dest
 	return nil
 }
 
@@ -70,12 +86,17 @@ func handleItem(src string, dest string, context Context) ([]RenderItem, error) 
 	}
 
 	for _, item := range items {
+		itemName := interpolate(item.Name(), context.TemplateContext())
+		if err := validateName(context, itemName); err != nil {
+			return nil, err
+		}
+		destName := interpolate(dest, context.TemplateContext())
+		if err := validateDestPath(context, destName); err != nil {
+			return nil, err
+		}
+
 		if item.IsDir() {
-			itemName := interpolate(item.Name(), context.TemplateContext())
-			if err := validateName(itemName); err != nil {
-				return nil, err
-			}
-			destName := interpolate(dest, context.TemplateContext())
+			// add current item
 			renderItem := RenderItem{
 				Dir:     destName,
 				Name:    itemName,
@@ -83,16 +104,17 @@ func handleItem(src string, dest string, context Context) ([]RenderItem, error) 
 				Append:  false,
 				IsDir:   true,
 			}
-			log.Printf("----- DIRECTORY: %s::%s\n", destName, itemName)
 			out = append(out, renderItem)
-			subitems, _ := handleItem(
-				filepath.Join(src, item.Name()),
-				filepath.Join(destName, itemName),
-				context)
-			out = append(out, subitems...)
+
+			// append subitems
+			subSrc := filepath.Join(src, item.Name())
+			subDest := filepath.Join(destName, itemName)
+			if subitems, err := handleItem(subSrc, subDest, context); err != nil {
+				return nil, err
+			} else {
+				out = append(out, subitems...)
+			}
 		} else {
-			destName := interpolate(dest, context.TemplateContext())
-			itemName := interpolate(item.Name(), context.TemplateContext())
 
 			// if is template
 			var srcContent []byte
@@ -107,11 +129,6 @@ func handleItem(src string, dest string, context Context) ([]RenderItem, error) 
 			} else {
 				srcContent, _ = os.ReadFile(filepath.Join(src, item.Name()))
 			}
-
-			// TODO: stehengeblieben
-
-			log.Printf("----- FILE: %s\n", filepath.Join(destName, itemName))
-			log.Println(string(srcContent))
 
 			renderItem := RenderItem{
 				Dir:     destName,
@@ -138,4 +155,59 @@ type RenderItem struct {
 	Content []byte
 	Append  bool
 	IsDir   bool
+}
+
+func applyHooks(ctx Context) error {
+	srcHooksPath := ctx.Src().HooksAbsPath()
+	if _, err := os.Stat(srcHooksPath); os.IsNotExist(err) {
+		return nil
+	}
+	items, _ := os.ReadDir(srcHooksPath)
+	for _, item := range items {
+		if item.IsDir() {
+			continue
+		}
+		hookFile := filepath.Join(srcHooksPath, item.Name())
+		// FIXME: only run if executable
+		// TODO: more paramters?
+		cmd := exec.Command(hookFile, ctx.Dest().AbsPath())
+		if output, err := cmd.Output(); err != nil {
+			return err
+		} else {
+			lines := strings.Split(string(output), "\n")
+			for _, line := range lines {
+				log.Printf("%s: %s\n", item.Name(), line)
+			}
+		}
+	}
+	return nil
+}
+
+const TemplateExt = ".tpl"
+
+type TemplateContext struct {
+	Values map[interface{}]interface{}
+}
+
+func interpolate(strOrTemplate string, ctx TemplateContext) string {
+	tpl, _ := template.New("").Parse(strOrTemplate)
+	buff := new(bytes.Buffer)
+	tpl.Execute(buff, ctx)
+	processed := buff.String()
+	log.Printf("interpolating string %s to %s\n", strOrTemplate, processed)
+	return processed
+}
+
+func CreateTemplateContext(filename string) (TemplateContext, error) {
+	content, rerr := ioutil.ReadFile(filename)
+	if rerr != nil {
+		return TemplateContext{}, fmt.Errorf("Error reading values file %s: %w", filename, rerr)
+	}
+	values := make(map[interface{}]interface{})
+	merr := yaml.Unmarshal(content, &values)
+	if merr != nil {
+		return TemplateContext{}, fmt.Errorf("Error unmarshalling values file: %w", merr)
+	}
+
+	return TemplateContext{Values: values}, nil
 }
