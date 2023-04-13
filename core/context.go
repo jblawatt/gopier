@@ -11,15 +11,15 @@ import (
 type Context interface {
 	Src() SourceDir
 	Dest() DestDir
-	Options() Options
-	TemplateContext() TemplateContext
+	Options() *GopierOptions
+	TemplateContext() *TemplateContext
 }
 
 type DefaultContext struct {
-	src        SourceDir
-	dest       DestDir
-	valuesFile string
-	options    Options
+	src             SourceDir
+	dest            DestDir
+	templateContext *TemplateContext
+	options         *GopierOptions
 }
 
 func CreateSourceDir(src string) SourceDir {
@@ -35,34 +35,37 @@ func CreateSourceDir(src string) SourceDir {
 	return LocalSourceDir{src}
 }
 
-func CreateDefaultContext(src string, dest string, valuesFile string) Context {
-	vf, _ := filepath.Abs(valuesFile)
+func CreateDefaultContext(src string, dest string, valuesFile string, options *GopierOptions) (Context, error) {
 	sourceDir := CreateSourceDir(src)
-	return DefaultContext{
+
+	vf, _ := filepath.Abs(valuesFile)
+	templateContext, terr := CreateTemplateContext(
+		filepath.Join(sourceDir.AbsPath(), "values.yaml"),
+		vf,
+	)
+	if terr != nil {
+		return nil, terr
+	}
+	return &DefaultContext{
 		sourceDir,
 		LocalDestDir{dest},
-		// FIXME: merge multiple values
-		vf,
-		Options{DryRun: false},
-	}
+		templateContext,
+		options,
+	}, nil
 }
 
-func (d DefaultContext) Src() SourceDir {
+func (d *DefaultContext) Src() SourceDir {
 	return d.src
 }
 
-func (d DefaultContext) Dest() DestDir {
+func (d *DefaultContext) Dest() DestDir {
 	return d.dest
 }
 
-func (d DefaultContext) Options() Options {
+func (d *DefaultContext) Options() *GopierOptions {
 	return d.options
 }
 
-func (d DefaultContext) TemplateContext() TemplateContext {
-	ctx, err := CreateTemplateContext(d.valuesFile)
-	if err != nil {
-		panic(err)
-	}
-	return ctx
+func (d *DefaultContext) TemplateContext() *TemplateContext {
+	return d.templateContext
 }

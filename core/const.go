@@ -2,4 +2,6 @@ package core
 
 const GitPrefix = "git+"
 
-const ConfigTemplateCache = "TemplateCache"
+const ConfigTemplateCache = "template_cache_dir"
+const ConfigTemplateExt = "template_ext"
+

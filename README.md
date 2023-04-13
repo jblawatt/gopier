@@ -1,5 +1,6 @@
 
 
+
 # TODO
 
 - check hooks for returnvalue 1
@@ -27,3 +28,5 @@
 
 - TemplateInstance
 - RenderRaw -> list of files / items?
+
+- improve error handling chain

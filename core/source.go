@@ -16,7 +16,7 @@ type SourceDir interface {
 	AbsPath() string
 	Validate() error
 	Bootstrap() error
-	Finalize() error
+	Finalize(context Context, rollback bool, err error) error
 	TemplateAbsPath() string
 	HooksAbsPath() string
 }
@@ -59,7 +59,7 @@ func (l LocalSourceDir) Bootstrap() error {
 	return nil
 }
 
-func (l LocalSourceDir) Finalize() error {
+func (l LocalSourceDir) Finalize(context Context, rollback bool, err error) error {
 	return nil
 }
 
@@ -109,6 +109,6 @@ func (g GitSourceDir) Bootstrap() error {
 	return nil
 }
 
-func (g GitSourceDir) Finalize() error {
+func (g GitSourceDir) Finalize(context Context, rollback bool, err error) error {
 	return nil
 }

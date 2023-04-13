@@ -5,14 +5,11 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	yaml "gopkg.in/yaml.v3"
 )
 
 type Runner interface {
@@ -21,46 +18,78 @@ type Runner interface {
 
 type DefaultRunner struct{}
 
+func formatError(msg string, err error) error {
+	return fmt.Errorf(msg, err)
+}
+
 func (p *DefaultRunner) Run(context Context) error {
+
 	if err := context.Src().Validate(); err != nil {
-		return fmt.Errorf("Error validating source: %w", err)
+		return formatError("Error validating source: %w", err)
 	}
 
 	if err := context.Dest().Validate(); err != nil {
-		return fmt.Errorf("Error validating destination: %w", err)
+		return formatError("Error validating destination: %w", err)
 	}
 
-	context.Src().Bootstrap()
+	if err := context.Src().Bootstrap(); err != nil {
+		return formatError("Error bootstrapping source: %w", err)
+	}
 
-	// Create Items
-	items, _ := handleItem(
+	// Render source to destination structure
+	items, err := p.renderSourceTemplates(
 		context.Src().TemplateAbsPath(),
 		context.Dest().AbsPath(),
 		context,
 	)
 
+	if err != nil {
+		return formatError("Error rendering source template: %w", err)
+	}
+
 	// Write Items to files
 	if !context.Options().DryRun {
-		writeItems(items)
+		if err := p.writeToDestination(items); err != nil {
+			if ferr := p.finalize(context, true, err); ferr != nil {
+				return fmt.Errorf("Error writing to destination: %w\nError cleaning up during rollback: %w", err, ferr)
+			}
+			return formatError("Error writing to destination: %w", err)
+		}
 	}
 
 	// Apply Hooks
 	if !context.Options().DryRun {
-		applyHooks(context)
+    if err := p.applyHooks(context); err != nil {
+			if ferr := p.finalize(context, true, err); ferr != nil {
+				return fmt.Errorf("Error applying hooks to destination: %w\nError cleaning up during rollback: %w", err, ferr)
+			}
+			return formatError("Error applying hooks destination: %w", err)
+    }
 	}
 
-	context.Src().Finalize()
+	context.Src().Finalize(context, false, nil)
 
 	return nil
 }
 
-func writeItems(items []RenderItem) error {
+func (p *DefaultRunner) writeToDestination(items []RenderItem) error {
 	for _, item := range items {
 		if item.IsDir {
 			os.MkdirAll(filepath.Join(item.Dir, item.Name), fs.ModePerm)
 		} else {
-			// from original
 			os.WriteFile(filepath.Join(item.Dir, item.Name), item.Content, fs.ModePerm)
+		}
+	}
+	return nil
+}
+
+func (p *DefaultRunner) finalize(context Context, rollback bool, err error) error {
+	if err := context.Src().Finalize(context, rollback, err); err != nil {
+		return formatError("Error finalizing source: %w", err)
+	}
+	if rollback {
+		if err := os.RemoveAll(context.Dest().AbsPath()); err != nil {
+			return formatError("Error cleanup destination while rollback: %w", err)
 		}
 	}
 	return nil
@@ -75,12 +104,16 @@ func validateName(context Context, itemName string) error {
 
 func validateDestPath(context Context, destPath string) error {
 	// TODO: do not excape from dest
+	if !strings.HasPrefix(destPath, context.Dest().AbsPath()) {
+		return fmt.Errorf("Dest path escapes from destination")
+	}
 	return nil
 }
 
-func handleItem(src string, dest string, context Context) ([]RenderItem, error) {
+func (p *DefaultRunner) renderSourceTemplates(src string, dest string, context Context) ([]RenderItem, error) {
 	var out []RenderItem
 	items, err := os.ReadDir(src)
+
 	if err != nil {
 		return nil, fmt.Errorf("Error reading template (sub)dir: %w", err)
 	}
@@ -109,19 +142,18 @@ func handleItem(src string, dest string, context Context) ([]RenderItem, error) 
 			// append subitems
 			subSrc := filepath.Join(src, item.Name())
 			subDest := filepath.Join(destName, itemName)
-			if subitems, err := handleItem(subSrc, subDest, context); err != nil {
+			if subitems, err := p.renderSourceTemplates(subSrc, subDest, context); err != nil {
 				return nil, err
 			} else {
 				out = append(out, subitems...)
 			}
 		} else {
-
 			// if is template
 			var srcContent []byte
-			if filepath.Ext(item.Name()) == TemplateExt {
-				// strip TemplateExtension
-				itemName = itemName[:len(itemName)-len(TemplateExt)]
+      tplExt := context.Options().TemplateExt
+			if filepath.Ext(item.Name()) == tplExt {
 				templateContent, _ := os.ReadFile(filepath.Join(src, item.Name()))
+				itemName = strings.TrimSuffix(itemName, tplExt)
 				tmpl, _ := template.New("").Parse(string(templateContent))
 				var w bytes.Buffer
 				tmpl.Execute(&w, context.TemplateContext())
@@ -157,9 +189,12 @@ type RenderItem struct {
 	IsDir   bool
 }
 
-func applyHooks(ctx Context) error {
-	srcHooksPath := ctx.Src().HooksAbsPath()
+func (p *DefaultRunner) applyHooks(context Context) error {
+	log.Println(">>>> appling hooks")
+	defer log.Println("<<<< hooks applied")
+	srcHooksPath := context.Src().HooksAbsPath()
 	if _, err := os.Stat(srcHooksPath); os.IsNotExist(err) {
+		log.Println("=== no hooks")
 		return nil
 	}
 	items, _ := os.ReadDir(srcHooksPath)
@@ -170,7 +205,7 @@ func applyHooks(ctx Context) error {
 		hookFile := filepath.Join(srcHooksPath, item.Name())
 		// FIXME: only run if executable
 		// TODO: more paramters?
-		cmd := exec.Command(hookFile, ctx.Dest().AbsPath())
+		cmd := exec.Command(hookFile, context.Dest().AbsPath())
 		if output, err := cmd.Output(); err != nil {
 			return err
 		} else {
@@ -181,33 +216,4 @@ func applyHooks(ctx Context) error {
 		}
 	}
 	return nil
-}
-
-const TemplateExt = ".tpl"
-
-type TemplateContext struct {
-	Values map[interface{}]interface{}
-}
-
-func interpolate(strOrTemplate string, ctx TemplateContext) string {
-	tpl, _ := template.New("").Parse(strOrTemplate)
-	buff := new(bytes.Buffer)
-	tpl.Execute(buff, ctx)
-	processed := buff.String()
-	log.Printf("interpolating string %s to %s\n", strOrTemplate, processed)
-	return processed
-}
-
-func CreateTemplateContext(filename string) (TemplateContext, error) {
-	content, rerr := ioutil.ReadFile(filename)
-	if rerr != nil {
-		return TemplateContext{}, fmt.Errorf("Error reading values file %s: %w", filename, rerr)
-	}
-	values := make(map[interface{}]interface{})
-	merr := yaml.Unmarshal(content, &values)
-	if merr != nil {
-		return TemplateContext{}, fmt.Errorf("Error unmarshalling values file: %w", merr)
-	}
-
-	return TemplateContext{Values: values}, nil
 }
